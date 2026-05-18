@@ -1,0 +1,21 @@
+# Зависимости Composer — устанавливаются при сборке Docker-образа
+vendor/
+
+# Кэш и сгенерированные файлы Laravel
+bootstrap/cache/*.php
+storage/logs/
+storage/framework/cache/
+storage/framework/sessions/
+storage/framework/views/
+
+# Сгенерированная Swagger-документация
+storage/api-docs/
+
+# Локальные переменные окружения
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp

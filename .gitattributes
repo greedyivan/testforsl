@@ -1,0 +1,31 @@
+# Нормализация строк: по умолчанию git сам определяет текстовые файлы
+* text=auto
+
+# Файлы, запускаемые внутри Linux-контейнеров, всегда хранить с LF.
+# Это предотвращает ошибку "$'\r': command not found" при сборке Docker
+# на Windows-машинах с core.autocrlf=true.
+*.sh        text eol=lf
+*.py        text eol=lf
+*.php       text eol=lf
+Dockerfile  text eol=lf
+Makefile    text eol=lf
+*.ini       text eol=lf
+*.cfg       text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.sql       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.env*      text eol=lf
+alembic.ini text eol=lf
+
+# Бинарные файлы — без конвертации
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.tar  binary
+*.gz   binary

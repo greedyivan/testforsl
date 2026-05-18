@@ -1,0 +1,35 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "B008",   # do not perform function calls in default arguments (FastAPI Depends)
+    "SIM108", # ternary operator — sometimes less readable
+    "UP040",  # type keyword вместо TypeAlias — Pydantic >=2.10 требует; оставляем TypeAlias
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Миграции генерируются alembic-ом — не менять импорты вручную
+"app/db/migrations/*" = ["UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+disallow_untyped_defs = true
+warn_return_any = false
+warn_unused_ignores = true

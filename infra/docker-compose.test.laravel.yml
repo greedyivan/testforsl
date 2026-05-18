@@ -1,0 +1,154 @@
+version: "3.9"
+name: notification-service-laravel-test
+
+x-test-env: &test-env
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/notifications_test
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/1
+  APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  APP_ENV: testing
+  APP_DEBUG: "true"
+  APP_URL: http://localhost:8001
+  MAX_RETRIES: "3"
+  RETRY_TTL_MS: "5000"
+  IDEMPOTENCY_TTL: "300"
+  MAIN_QUEUE: notifications
+  RETRY_QUEUE: notifications.retry
+  DEAD_QUEUE: notifications.dead
+  DLX_EXCHANGE: notifications.dlx
+  DEAD_EXCHANGE: notifications.dead.exchange
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: debug
+
+services:
+  # ── Infrastructure ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: notifications_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notifications_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Application services ───────────────────────────────────────────────────
+  app:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+    environment:
+      <<: *test-env
+    ports:
+      - "8001:8000"   # Swagger UI: http://localhost:8001/docs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  worker:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+    # Use the package's own rabbitmq:consume command which supports --prefetch-count
+    # and --max-priority for priority-aware consumption.
+    command: >
+      rabbitmq:consume rabbitmq
+        --queue=notifications
+        --prefetch-count=1
+        --max-priority=10
+        --sleep=0
+        --timeout=60
+        --tries=1
+        --max-jobs=0
+    environment:
+      <<: *test-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Republisher ────────────────────────────────────────────────────────────
+  # Periodically republishes notifications stuck in 'queued' status.
+  # In production this role is filled by the artisan scheduler or a cron job.
+  # Here we run the command in a loop every 10 s to keep tests fast.
+  #
+  # entrypoint is overridden to "" so the shell loop is not wrapped by
+  # entrypoint.sh's "exec php artisan $@" logic.
+  # Depends on app (service_healthy) to ensure migrations have run first.
+  republisher:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+    entrypoint: ""
+    command: >
+      bash -c "while true; do
+        php artisan notifications:republish-stuck --older-than=60;
+        sleep 10;
+      done"
+    environment:
+      <<: *test-env
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # ── Test runner ────────────────────────────────────────────────────────────
+  tests:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+      args:
+        BUILD_DEV: "1"
+    entrypoint: ""
+    command: >
+      bash -c "
+        echo '[tests] Waiting for API...' &&
+        until curl -sf http://app:8000/health; do
+          echo '[tests] API not ready, retrying...' && sleep 3
+        done &&
+        echo '[tests] API is ready. Running tests.' &&
+        php vendor/bin/phpunit --testdox
+      "
+    environment:
+      <<: *test-env
+      API_BASE_URL: http://app:8000
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_started
+      republisher:
+        condition: service_started

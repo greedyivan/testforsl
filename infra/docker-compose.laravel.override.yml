@@ -1,0 +1,50 @@
+version: "3.9"
+
+# Override: переключает сервисы app и worker на реализацию Laravel.
+# Использование:
+#   docker compose -f infra/docker-compose.yml \
+#                  -f infra/docker-compose.laravel.override.yml up --build
+
+x-laravel-env: &laravel-env
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/notifications
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_URL: http://localhost:8000
+  MAX_RETRIES: "3"
+  RETRY_TTL_MS: "30000"
+  IDEMPOTENCY_TTL: "86400"
+  MAIN_QUEUE: notifications
+  RETRY_QUEUE: notifications.retry
+  DEAD_QUEUE: notifications.dead
+  DLX_EXCHANGE: notifications.dlx
+  DEAD_EXCHANGE: notifications.dead.exchange
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: info
+
+services:
+  app:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+    environment:
+      <<: *laravel-env
+    ports:
+      - "8000:8000"   # Swagger UI: http://localhost:8000/docs
+
+  worker:
+    build:
+      context: ../service-laravel
+      dockerfile: Dockerfile
+    command: >
+      queue:work rabbitmq
+        --queue=notifications
+        --prefetch-count=1
+        --sleep=0
+        --timeout=60
+        --tries=1
+        --max-jobs=0
+    environment:
+      <<: *laravel-env

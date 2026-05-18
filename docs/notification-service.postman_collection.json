@@ -1,0 +1,581 @@
+{
+  "info": {
+    "name": "Notification Service",
+    "description": "API-коллекция для тестирования Notification Service, запущенного локально через docker-compose.\n\nПодходит для обеих реализаций (FastAPI и Laravel) — переключение через переменную `baseUrl`.\n\nБазовый URL по умолчанию: http://localhost:8000\n\nЗапуск FastAPI:\n  docker compose -f infra/docker-compose.yml up --build\n\nЗапуск Laravel:\n  docker compose -f infra/docker-compose.yml -f infra/docker-compose.laravel.override.yml up --build",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "notification-service-v1"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "test-key-001",
+      "type": "string"
+    },
+    {
+      "key": "subscriberId",
+      "value": "user-001",
+      "type": "string"
+    },
+    {
+      "key": "batchId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "dedupBatchId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Система",
+      "item": [
+        {
+          "name": "Живость — Проверка здоровья",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Liveness-проба — всегда возвращает 200, если процесс жив."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\": \"ok\"}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Тело содержит status ok', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.status).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Готовность — Проверка готовности",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/ready",
+              "host": ["{{baseUrl}}"],
+              "path": ["ready"]
+            },
+            "description": "Readiness-проба — возвращает 200, когда все зависимости (PostgreSQL, Redis, RabbitMQ) доступны. При сбое хотя бы одной — 503."
+          },
+          "response": [
+            {
+              "name": "200 OK — все зависимости доступны",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\": \"ok\", \"checks\": {\"postgres\": \"ok\", \"redis\": \"ok\", \"rabbitmq\": \"ok\"}}"
+            },
+            {
+              "name": "503 — одна или более зависимостей недоступна",
+              "status": "Service Unavailable",
+              "code": 503,
+              "body": "{\"status\": \"degraded\", \"checks\": {\"postgres\": \"ok\", \"redis\": \"ok\", \"rabbitmq\": \"error: connection refused\"}}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Тело содержит status ok', () => {",
+                  "  pm.expect(pm.response.json().status).to.equal('ok');",
+                  "});",
+                  "pm.test('Все проверки успешны', () => {",
+                  "  const checks = pm.response.json().checks;",
+                  "  pm.expect(checks.postgres).to.equal('ok');",
+                  "  pm.expect(checks.redis).to.equal('ok');",
+                  "  pm.expect(checks.rabbitmq).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Уведомления",
+      "item": [
+        {
+          "name": "Массовая рассылка — SMS Маркетинг",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"sms\",\n  \"message\": \"Специальное предложение только для вас! Используйте код SAVE20 для скидки 20%.\",\n  \"type\": \"marketing\",\n  \"recipient_ids\": [\"user-001\", \"user-002\", \"user-003\"],\n  \"idempotency_key\": \"{{idempotencyKey}}\"\n}"
+            },
+            "description": "Массовая отправка маркетинговой SMS трём получателям.\n\nОтвет — 202 Accepted, доставка асинхронная.\nПре-скрипт генерирует уникальный `idempotency_key` при каждом запуске."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Генерируем уникальный ключ идемпотентности при каждом запуске",
+                  "pm.collectionVariables.set('idempotencyKey', 'key-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 202', () => pm.response.to.have.status(202));",
+                  "pm.test('Ответ содержит batch_id', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.batch_id).to.be.a('string');",
+                  "  pm.collectionVariables.set('batchId', body.batch_id);",
+                  "});",
+                  "pm.test('accepted равно 3', () => {",
+                  "  pm.expect(pm.response.json().accepted).to.equal(3);",
+                  "});",
+                  "pm.test('Все статусы queued', () => {",
+                  "  const notifications = pm.response.json().notifications;",
+                  "  notifications.forEach(n => pm.expect(n.status).to.equal('queued'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Массовая рассылка — Email Транзакционный",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"email\",\n  \"message\": \"Ваш код подтверждения: 847291. Действителен 10 минут.\",\n  \"type\": \"transactional\",\n  \"recipient_ids\": [\"user-001\"],\n  \"idempotency_key\": \"tx-email-{{$randomUUID}}\"\n}"
+            },
+            "description": "Отправка приоритетного транзакционного Email (например, код верификации).\n\nТранзакционные сообщения имеют priority=10 в RabbitMQ и обрабатываются\nраньше любых маркетинговых сообщений в очереди."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 202', () => pm.response.to.have.status(202));",
+                  "pm.test('Статус уведомления queued', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.notifications[0].status).to.equal('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Массовая рассылка — Идемпотентность (дубликат)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"sms\",\n  \"message\": \"Тест идемпотентности\",\n  \"type\": \"marketing\",\n  \"recipient_ids\": [\"user-001\"],\n  \"idempotency_key\": \"fixed-idempotency-key-demo\"\n}"
+            },
+            "description": "Отправьте запрос дважды с одинаковым `idempotency_key`.\n\nОба ответа вернут одинаковый `batch_id`, дубликаты уведомлений в БД созданы не будут.\nПеременная `dedupBatchId` запоминается при первом вызове и сверяется при повторном."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 202', () => pm.response.to.have.status(202));",
+                  "pm.test('batch_id совпадает с предыдущим', () => {",
+                  "  const body = pm.response.json();",
+                  "  const prev = pm.collectionVariables.get('dedupBatchId');",
+                  "  if (prev) {",
+                  "    pm.expect(body.batch_id).to.equal(prev);",
+                  "  } else {",
+                  "    pm.collectionVariables.set('dedupBatchId', body.batch_id);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Массовая рассылка — Ошибка валидации (пустой список получателей)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"sms\",\n  \"message\": \"Тест\",\n  \"type\": \"marketing\",\n  \"recipient_ids\": [],\n  \"idempotency_key\": \"validation-test-empty\"\n}"
+            },
+            "description": "Должен вернуть 422 Unprocessable Entity — поле `recipient_ids` должно содержать хотя бы один элемент."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Массовая рассылка — Ошибка валидации (отсутствует recipient_ids)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"sms\",\n  \"message\": \"Тест\",\n  \"type\": \"marketing\",\n  \"idempotency_key\": \"validation-test-no-recipients\"\n}"
+            },
+            "description": "Должен вернуть 422 Unprocessable Entity — поле `recipient_ids` обязательно."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Массовая рассылка — Ошибка валидации (недопустимый канал)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/notifications/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "notifications", "bulk"]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"telegram\",\n  \"message\": \"Тест\",\n  \"type\": \"marketing\",\n  \"recipient_ids\": [\"user-001\"],\n  \"idempotency_key\": \"validation-test-channel\"\n}"
+            },
+            "description": "Должен вернуть 422 Unprocessable Entity — допустимые значения `channel`: sms, email."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Подписчики",
+      "item": [
+        {
+          "name": "Получить уведомления — Все",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/{{subscriberId}}/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "{{subscriberId}}", "notifications"]
+            },
+            "description": "Получить все уведомления подписчика `user-001`.\n\nЗапустите после «Массовая рассылка — SMS Маркетинг», чтобы увидеть результаты доставки.\nВоркер обрабатывает сообщения асинхронно: статус меняется\n`queued` → `sent` → `delivered` со временем."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('subscriber_id совпадает', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.subscriber_id).to.equal(pm.collectionVariables.get('subscriberId'));",
+                  "});",
+                  "pm.test('total не отрицательный', () => {",
+                  "  pm.expect(pm.response.json().total).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Получить уведомления — Фильтр по status=delivered",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/{{subscriberId}}/notifications?status=delivered",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "{{subscriberId}}", "notifications"],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "delivered"
+                }
+              ]
+            },
+            "description": "Фильтрация по статусу доставки. Допустимые значения: queued, sent, delivered, dropped."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Все возвращённые уведомления доставлены', () => {",
+                  "  const notifications = pm.response.json().notifications;",
+                  "  notifications.forEach(n => pm.expect(n.status).to.equal('delivered'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Получить уведомления — Фильтр по channel=sms",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/{{subscriberId}}/notifications?channel=sms",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "{{subscriberId}}", "notifications"],
+              "query": [
+                {
+                  "key": "channel",
+                  "value": "sms"
+                }
+              ]
+            },
+            "description": "Фильтрация по каналу. Возвращает только SMS-уведомления."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Все возвращённые уведомления — SMS', () => {",
+                  "  const notifications = pm.response.json().notifications;",
+                  "  notifications.forEach(n => pm.expect(n.channel).to.equal('sms'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Получить уведомления — Фильтр по channel=email",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/{{subscriberId}}/notifications?channel=email",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "{{subscriberId}}", "notifications"],
+              "query": [
+                {
+                  "key": "channel",
+                  "value": "email"
+                }
+              ]
+            },
+            "description": "Фильтрация по каналу. Возвращает только Email-уведомления."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Все возвращённые уведомления — Email', () => {",
+                  "  const notifications = pm.response.json().notifications;",
+                  "  notifications.forEach(n => pm.expect(n.channel).to.equal('email'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Получить уведомления — Пагинация",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/{{subscriberId}}/notifications?limit=2&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "{{subscriberId}}", "notifications"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Пагинация результатов. Параметры `limit` и `offset` управляют размером страницы."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Не более 2 уведомлений в ответе', () => {",
+                  "  pm.expect(pm.response.json().notifications.length).to.be.at.most(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Получить уведомления — Несуществующий подписчик",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscribers/nobody-at-all/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "subscribers", "nobody-at-all", "notifications"]
+            },
+            "description": "Возвращает 200 с total=0 и пустым списком уведомлений для несуществующего подписчика."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('total равен 0', () => pm.expect(pm.response.json().total).to.equal(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OpenAPI",
+      "item": [
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/docs",
+              "host": ["{{baseUrl}}"],
+              "path": ["docs"]
+            },
+            "description": "Интерактивный Swagger UI — доступен в обеих реализациях по адресу /docs."
+          }
+        },
+        {
+          "name": "Схема OpenAPI JSON",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": ["{{baseUrl}}"],
+              "path": ["openapi.json"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Содержит поле openapi', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('openapi');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

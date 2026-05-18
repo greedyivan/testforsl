@@ -1,0 +1,93 @@
+version: "3.9"
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/notifications
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  DEBUG: "false"
+  MAX_RETRIES: "3"
+  RETRY_TTL_MS: "30000"
+  IDEMPOTENCY_TTL: "86400"
+
+services:
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: notifications
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Application ─────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: ../service
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure:5
+
+  worker:
+    build:
+      context: ../service
+    command: python -m app.worker
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure:5
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  redis_data:

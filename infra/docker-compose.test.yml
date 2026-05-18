@@ -1,0 +1,102 @@
+version: "3.9"
+name: notification-service-test   # изолирует тестовые контейнеры от prod-стека
+
+# Тестовая среда: отдельная БД и Redis DB index 1, чтобы не конфликтовать с prod.
+x-test-env: &test-env
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/notifications_test
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/1
+  DEBUG: "true"
+  MAX_RETRIES: "3"
+  RETRY_TTL_MS: "5000"              # 5 с в тестах (против 30 с в prod)
+  IDEMPOTENCY_TTL: "300"
+  REPUBLISH_INTERVAL_SECONDS: "10"  # 10 s для быстрого прохождения republish-теста
+
+services:
+  # ── Инфраструктура (те же образы, что в prod, тома эфемерные) ───────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: notifications_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notifications_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Application services ───────────────────────────────────────────────────
+  app:
+    build:
+      context: ../service
+    environment:
+      <<: *test-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: ../service
+    command: python -m app.worker
+    environment:
+      <<: *test-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Test runner ────────────────────────────────────────────────────────────
+  tests:
+    build:
+      context: ../service
+    entrypoint: ""
+    command: >
+      bash -c "
+        echo '[tests] Waiting for API...' &&
+        until curl -sf http://app:8000/health; do
+          echo '[tests] API not ready, retrying...' && sleep 3
+        done &&
+        echo '[tests] API ready. Starting tests.' &&
+        pytest tests/ -v --tb=short
+      "
+    environment:
+      <<: *test-env
+      API_BASE_URL: http://app:8000
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_started
